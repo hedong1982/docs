@@ -1073,7 +1073,11 @@ export function renderLine(
   // Image-level alignment wins when present — it's the more specific signal
   // from OOXML, and it's the only signal Word writes for that kind of
   // anchored layout.
-  if (runsForLine.length === 1 && isImageRun(runsForLine[0])) {
+  if (
+    runsForLine.length === 1 &&
+    isImageRun(runsForLine[0]) &&
+    (runsForLine[0].displayMode === 'block' || runsForLine[0].wrapType === 'topAndBottom')
+  ) {
     const imageRun = runsForLine[0] as ImageRun;
     const imageAlign = imageRun.position?.horizontal?.align;
     const effectiveAlign = imageAlign ?? alignment;

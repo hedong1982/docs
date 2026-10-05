@@ -26,6 +26,7 @@
  */
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useTranslation } from '../i18n';
 
 const AUTO_HIDE_AFTER_MS = 4000;
 const READ_WPM = 220; // average adult silent reading speed
@@ -75,10 +76,10 @@ const escKbdStyle: CSSProperties = {
   marginRight: 6,
 };
 
-function formatReadTime(words: number): string {
-  if (words < 50) return '< 1 min';
+function formatReadTime(words: number, t: ReturnType<typeof useTranslation>['t']): string {
+  if (words < 50) return t('focusMode.lessThanMinute');
   const minutes = Math.max(1, Math.round(words / READ_WPM));
-  return `~${minutes} min read`;
+  return t('focusMode.readingTime', { minutes });
 }
 
 export interface FocusModeBarProps {
@@ -89,6 +90,7 @@ export interface FocusModeBarProps {
 }
 
 export function FocusModeBar({ wordCount, isActive }: FocusModeBarProps) {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(true);
   const idleTimerRef = useRef<number | null>(null);
 
@@ -120,14 +122,14 @@ export function FocusModeBar({ wordCount, isActive }: FocusModeBarProps) {
     <div style={wrapStyle} aria-hidden={!visible}>
       <div style={pillStyle(visible)} data-testid="focus-mode-bar">
         <span>
-          {wordCount.toLocaleString()} {wordCount === 1 ? 'word' : 'words'}
+          {wordCount.toLocaleString()} {wordCount === 1 ? t('focusMode.word') : t('focusMode.words')}
         </span>
         <span style={dotStyle}>·</span>
-        <span>{formatReadTime(wordCount)}</span>
+        <span>{formatReadTime(wordCount, t)}</span>
         <span style={dotStyle}>·</span>
         <span>
           <kbd style={escKbdStyle}>Esc</kbd>
-          to exit
+          {t('focusMode.exit')}
         </span>
       </div>
     </div>

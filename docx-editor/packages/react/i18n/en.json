@@ -1,5 +1,24 @@
 {
   "_lang": "en",
+  "about": {
+    "title": "About {appName}",
+    "tagline": "A casual, real-time collaborative .docx editor.",
+    "openIt": "Open it.",
+    "tryLiveDemo": "Try the live demo",
+    "version": "Version",
+    "source": "Source",
+    "engine": "Engine",
+    "builtOn": "Built on",
+    "license": "License",
+    "copyright": "© {year} Casual Office. Released under the Apache-2.0 license."
+  },
+  "focusMode": {
+    "word": "word",
+    "words": "words",
+    "lessThanMinute": "< 1 min",
+    "readingTime": "~{minutes} min read",
+    "exit": "to exit"
+  },
   "common": {
     "cancel": "Cancel",
     "ok": "OK",

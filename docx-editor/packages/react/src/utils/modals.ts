@@ -108,6 +108,7 @@ export interface PromptOptions {
   label?: string;
   defaultValue?: string;
   confirmLabel?: string;
+  cancelLabel?: string;
 }
 
 export function promptModal(opts: PromptOptions): Promise<string | null> {
@@ -120,7 +121,7 @@ export function promptModal(opts: PromptOptions): Promise<string | null> {
         ${opts.label ? `<label style="display:block;margin:0 0 6px;color:${c.muted};">${esc(opts.label)}</label>` : ''}
         <input data-act="input" type="text" style="box-sizing:border-box;width:100%;padding:9px 10px;border-radius:8px;border:1px solid ${c.btnBorder};background:${c.inputBg};color:${c.fg};margin-bottom:16px;font:inherit;" />
         <div style="display:flex;gap:8px;justify-content:flex-end;">
-          <button data-act="cancel" style="padding:8px 14px;border-radius:8px;border:1px solid ${c.btnBorder};background:${c.btnBg};color:${c.fg};cursor:pointer;">Cancel</button>
+          <button data-act="cancel" style="padding:8px 14px;border-radius:8px;border:1px solid ${c.btnBorder};background:${c.btnBg};color:${c.fg};cursor:pointer;">${esc(opts.cancelLabel ?? 'Cancel')}</button>
           <button data-act="ok" style="padding:8px 14px;border-radius:8px;border:0;background:#2563eb;color:#fff;font-weight:600;cursor:pointer;">${esc(opts.confirmLabel ?? 'OK')}</button>
         </div>
       </div>`;

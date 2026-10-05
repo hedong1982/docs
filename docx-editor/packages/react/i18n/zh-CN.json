@@ -1,5 +1,24 @@
 {
   "_lang": "zh-CN",
+  "about": {
+    "title": "关于 {appName}",
+    "tagline": "一款轻量、实时协作的 .docx 编辑器。",
+    "openIt": "打开它。",
+    "tryLiveDemo": "试用在线演示",
+    "version": "版本",
+    "source": "源代码",
+    "engine": "引擎",
+    "builtOn": "基于",
+    "license": "许可证",
+    "copyright": "© {year} Casual Office。以 Apache-2.0 许可证发布。"
+  },
+  "focusMode": {
+    "word": "字",
+    "words": "字",
+    "lessThanMinute": "不到 1 分钟",
+    "readingTime": "约 {minutes} 分钟阅读",
+    "exit": "退出"
+  },
   "common": {
     "cancel": "取消",
     "insert": "插入",

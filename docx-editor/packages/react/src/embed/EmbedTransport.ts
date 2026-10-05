@@ -144,7 +144,11 @@ export class EmbedTransport {
 
   /** Editor → Host: ask the host to persist `bytes`. */
   async requestSave(req: SaveRequestData, timeoutMs = 30000): Promise<SaveResponseData> {
-    return this.request<SaveResponseData>('casual.save.request', req, timeoutMs, [req.bytes]);
+    // DocumentAgent retains the same buffer for selective saves. Transferring
+    // it here would detach that retained ArrayBuffer after the first save.
+    // Structured cloning keeps the editor-owned copy available for the next
+    // save while still sending the complete binary payload to the host.
+    return this.request<SaveResponseData>('casual.save.request', req, timeoutMs);
   }
 
   /** Editor → Host: selection moved. Fire-and-forget. */

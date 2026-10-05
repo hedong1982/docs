@@ -13,6 +13,7 @@
 import type { CSSProperties } from 'react';
 import { Dialog } from '../ui/Dialog';
 import { openExternal } from '../../utils/openExternal';
+import { useTranslation } from '../../i18n';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const APP_VERSION: string = (globalThis as any).__APP_VERSION__ ?? 'dev';
@@ -142,12 +143,13 @@ export function AboutDialog({
   sourceUrl = 'https://github.com/CasualOffice/docs',
   homepageUrl = 'https://docs.casualoffice.org/',
 }: AboutDialogProps) {
+  const { t } = useTranslation();
   const year = new Date().getFullYear();
   return (
     <Dialog
       isOpen={isOpen}
       onClose={onClose}
-      title={`About ${appName}`}
+      title={t('about.title', { appName })}
       testId="about-dialog"
       width={520}
       footer={
@@ -162,9 +164,9 @@ export function AboutDialog({
         </div>
         <h3 style={productTitleStyle}>{appName}</h3>
         <p style={taglineStyle}>
-          A casual, real-time collaborative <code>.docx</code> editor.
+          {t('about.tagline')}
           <br />
-          Open it.{' '}
+          {t('about.openIt')}{' '}
           <a
             href={homepageUrl}
             onClick={(e) => {
@@ -173,16 +175,16 @@ export function AboutDialog({
             }}
             style={linkStyle}
           >
-            Try the live demo
+            {t('about.tryLiveDemo')}
           </a>
           .
         </p>
         <dl style={factsStyle}>
-          <dt style={dtStyle}>Version</dt>
+          <dt style={dtStyle}>{t('about.version')}</dt>
           <dd style={ddStyle} data-testid="about-version">
             {APP_VERSION}
           </dd>
-          <dt style={dtStyle}>Source</dt>
+          <dt style={dtStyle}>{t('about.source')}</dt>
           <dd style={ddStyle}>
             <a
               href={sourceUrl}
@@ -195,9 +197,9 @@ export function AboutDialog({
               {sourceUrl.replace(/^https?:\/\//, '')}
             </a>
           </dd>
-          <dt style={dtStyle}>Engine</dt>
+          <dt style={dtStyle}>{t('about.engine')}</dt>
           <dd style={ddStyle}>
-            Built on{' '}
+            {t('about.builtOn')}{' '}
             <a
               href="https://github.com/eigenpal/docx-editor"
               onClick={(e) => {
@@ -210,10 +212,10 @@ export function AboutDialog({
             </a>{' '}
             (MIT)
           </dd>
-          <dt style={dtStyle}>License</dt>
+          <dt style={dtStyle}>{t('about.license')}</dt>
           <dd style={ddStyle}>Apache-2.0</dd>
         </dl>
-        <p style={copyrightStyle}>© {year} Casual Office. Released under the Apache-2.0 license.</p>
+        <p style={copyrightStyle}>{t('about.copyright', { year })}</p>
       </div>
     </Dialog>
   );

@@ -43,7 +43,7 @@ import {
   hasPageBreakBefore,
 } from './keep-together';
 import { resolveAnchorX, resolveAnchorY, type AnchorGeometry } from './anchorGeometry';
-import { pixelsToEmu } from '../utils/units';
+import { emuToPixels, pixelsToEmu } from '../utils/units';
 
 // Default page size (US Letter in pixels at 96 DPI)
 const DEFAULT_PAGE_SIZE = { w: 816, h: 1056 };
@@ -515,6 +515,8 @@ function layoutParagraph(
     throw new Error(`layoutParagraph: expected paragraph measure`);
   }
 
+  ensureParagraphAnchorFits(block, paginator, emuToPixels);
+
   const lines = measure.lines;
   if (lines.length === 0) {
     // Empty paragraph - still takes up space based on spacing
@@ -642,6 +644,52 @@ function layoutParagraph(
     if (currentLineIndex < lines.length) {
       paginator.ensureFits(lines[currentLineIndex].lineHeight);
     }
+  }
+}
+
+/**
+ * Keep paragraph/line-relative wrapping images with their anchor paragraph.
+ * Their exclusion band is not represented in the paragraph's measured line
+ * height, so without this preflight the paragraph can begin at the bottom of
+ * a page and leave its image or following text stranded across the break.
+ */
+function ensureParagraphAnchorFits(
+  paragraph: ParagraphBlock,
+  paginator: ReturnType<typeof createPaginator>,
+  toPixels: (emu: number) => number
+): void {
+  let requiredHeight = 0;
+  for (const run of paragraph.runs ?? []) {
+    if (run.kind !== 'image') continue;
+    const vertical = run.position?.vertical;
+    const wraps =
+      ['square', 'tight', 'through'].includes(run.wrapType ?? '') ||
+      (run.displayMode === 'float' &&
+        !['behind', 'inFront', 'topAndBottom'].includes(run.wrapType ?? ''));
+    if (
+      !wraps ||
+      !vertical ||
+      !['paragraph', 'line'].includes(vertical.relativeTo ?? '')
+    ) {
+      continue;
+    }
+    const offset = vertical.posOffset === undefined ? 0 : toPixels(vertical.posOffset);
+    requiredHeight = Math.max(
+      requiredHeight,
+      offset + run.height + (run.distBottom ?? 0)
+    );
+  }
+
+  if (requiredHeight <= 0) return;
+  requiredHeight += Math.max(0, paragraph.attrs?.spacing?.before ?? 0);
+  const state = paginator.getCurrentState();
+  const fullPageHeight = state.contentBottom - state.topMargin;
+  if (
+    requiredHeight <= fullPageHeight &&
+    requiredHeight > paginator.getAvailableHeight() &&
+    state.cursorY > state.topMargin + 0.5
+  ) {
+    paginator.forcePageBreak();
   }
 }
 

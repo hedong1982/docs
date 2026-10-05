@@ -383,6 +383,7 @@ function VersionsTab({
     const raw = await promptModal({
       title: t('sidebar.versionHistory.nameThisVersion'),
       confirmLabel: t('common.save'),
+      cancelLabel: t('common.cancel'),
     });
     if (raw == null) return;
     const trimmed = raw.trim();
@@ -413,6 +414,7 @@ function VersionsTab({
         title: t('sidebar.versionHistory.renameVersion'),
         defaultValue: snap.name,
         confirmLabel: t('sidebar.versionHistory.rename'),
+        cancelLabel: t('common.cancel'),
       });
       if (next == null) return;
       const trimmed = next.trim();
@@ -430,6 +432,7 @@ function VersionsTab({
         title: t('sidebar.versionHistory.deleteVersion'),
         body: t('sidebar.versionHistory.deleteConfirmBody', { name: snap.name }),
         confirmLabel: t('common.delete'),
+        cancelLabel: t('common.cancel'),
         danger: true,
       });
       if (!ok) return;

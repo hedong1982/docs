@@ -109,7 +109,10 @@ export function resolveAnchorX(
     x = bandWidth ? baseX + (bandWidth - objectWidth) / 2 : 0;
   } else if (h.posOffset !== undefined) {
     x = baseX + emuToPixels(h.posOffset);
-    side = x > contentWidth / 2 ? 'right' : 'left';
+    // For both-sided wrapping, classify the image by its center. A wide
+    // centered image can start left of the page midpoint while occupying the
+    // right side; using only its left edge makes text wrap on the wrong side.
+    side = x + objectWidth / 2 > contentWidth / 2 ? 'right' : 'left';
   } else {
     // Bare positionH (no align, no offset) — anchor at band origin.
     x = baseX;
