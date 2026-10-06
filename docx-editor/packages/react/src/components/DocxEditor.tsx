@@ -79,7 +79,11 @@ import {
 import { withActionNotifier, type AiProp, type DocOpsAction } from '../docops/ai-prop';
 import { markdownToFragment } from '../lib/writer/markdownToFragment';
 import { AutosaveRestoreBanner } from './AutosaveRestoreBanner';
-import { writeAutosave, clearLegacyLocalStorageAutosave } from '../utils/autosave';
+import {
+  clearAutosave,
+  clearLegacyLocalStorageAutosave,
+  writeAutosave,
+} from '../utils/autosave';
 import { restoreNativeBuildingBlocks } from '../utils/buildingBlocks';
 import { restoreNativeCitations } from '../utils/citations';
 import { triggerBrowserDownload, documentBaseName, createDocxBlob } from '../utils/download';
@@ -517,6 +521,14 @@ export interface DocxEditorProps {
   document?: Document | null;
   /** Callback when document is saved */
   onSave?: (buffer: ArrayBuffer) => void;
+  /** Separate host persistence action; local DOCX download remains independent. */
+  onSaveToServer?: () => void;
+  /** Prevent repeat manual saves while the host persistence queue is running. */
+  isSavingToServer?: boolean;
+  /** Hosts that own navigation can remove File > Open. */
+  showOpenButton?: boolean;
+  /** Hosts that own the application theme can remove editor theme controls. */
+  showThemeControls?: boolean;
   /** Optional host-provided file deliverer for File → Export (ODT/MD/TXT),
    *  Make a copy, and Email-as-attachment. When set, the editor hands the
    *  produced blob + a suggested filename here instead of doing a browser
@@ -571,6 +583,10 @@ export interface DocxEditorProps {
    * `'dirtyChange'` emitter event.
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Every persisted mutation, even when the editor is already locally dirty. */
+  onDocumentModified?: () => void;
+  /** The host owns the server-aware unload guard for iframe integrations. */
+  hostOwnsUnloadGuard?: boolean;
   /** When set, the Version-history panel lists the host's
    *  server-persisted revision chain (`/history`) and restores by
    *  downloading a revision's `.docx` into the editor. Absent → the
@@ -683,6 +699,8 @@ export interface DocxEditorProps {
    * "ready" signal instead of polling the ref.
    */
   onReady?: (api: DocxEditorRef) => void;
+  /** Capture local history only after server acknowledgement in embedded hosts. */
+  versionHistoryMode?: 'local' | 'server-save';
   /**
    * Whether to show toolbar (default: true, or per `chrome` preset).
    * @deprecated Use `features={{ toolbar: false }}` (doc 38 §5a). Still honored,
@@ -841,8 +859,10 @@ export interface DocxEditorProps {
   pluginRenderedDomContext?: RenderedDomContext | null;
   /** Custom logo/icon for the title bar */
   renderLogo?: () => ReactNode;
-  /** Document name shown in the title bar */
+  /** Document name shown in the title bar. */
   documentName?: string;
+  /** Stable identity used to isolate IndexedDB version history between files. */
+  versionHistoryDocId?: string;
   /** Callback when document name changes */
   onDocumentNameChange?: (name: string) => void;
   /** Whether the document name is editable (default: true) */
@@ -994,6 +1014,8 @@ export interface DocxEditorRef {
   getEditorRef: () => PagedEditorRef | null;
   /** Save the document to buffer. Pass { selective: false } to force full repack. */
   save: (options?: { selective?: boolean }) => Promise<ArrayBuffer | null>;
+  /** Prepare an immutable checkpoint; invoke the returned callback only on server success. */
+  prepareServerVersion: () => ((manual: boolean) => Promise<number | null>) | null;
   /** Set zoom level */
   setZoom: (zoom: number) => void;
   /** Get current zoom level */
@@ -1754,6 +1776,10 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     documentBuffer,
     document: initialDocument,
     onSave,
+    onSaveToServer,
+    isSavingToServer = false,
+    showOpenButton = true,
+    showThemeControls = true,
     onExport,
     onNew,
     onFileOpened,
@@ -1771,6 +1797,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     chrome,
     features,
     onReady,
+    versionHistoryMode = 'local',
     // `chrome` sets the default UI level; an explicit show* prop still wins
     // (destructuring defaults only apply when the prop is undefined). No
     // chrome → "full" defaults, so existing consumers are unaffected.
@@ -1807,6 +1834,8 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     onModeChange,
     onDocumentModeChange,
     onDirtyChange,
+    onDocumentModified,
+    hostOwnsUnloadGuard = false,
     onCommentAdd,
     onCommentResolve,
     onCommentDelete,
@@ -1827,6 +1856,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     pluginRenderedDomContext,
     renderLogo,
     documentName,
+    versionHistoryDocId,
     onDocumentNameChange,
     documentNameEditable = true,
     renderTitleBarRight,
@@ -2238,6 +2268,8 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   const selectionChangeSubscribersRef = useRef(new Set<(s: SelectionState | null) => void>());
   const onCommentsChangeRef = useRef(onCommentsChange);
   onCommentsChangeRef.current = onCommentsChange;
+  const onDocumentModifiedRef = useRef(onDocumentModified);
+  onDocumentModifiedRef.current = onDocumentModified;
 
   // Unified setter — routes to internal state in uncontrolled mode and/or to
   // the parent's onCommentsChange callback in controlled mode.
@@ -2253,12 +2285,13 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   // value before echoing it back via `commentsProp`. The `commentsRef.current = comments`
   // assignment one effect above keeps the ref in sync with the prop.
   const setComments = useCallback(
-    (next: Comment[] | ((prev: Comment[]) => Comment[])) => {
+    (next: Comment[] | ((prev: Comment[]) => Comment[]), modified = true) => {
       const resolved =
         typeof next === 'function'
           ? (next as (prev: Comment[]) => Comment[])(commentsRef.current)
           : next;
       if (resolved === commentsRef.current) return;
+      if (modified) onDocumentModifiedRef.current?.();
       if (!isControlledComments) {
         commentsRef.current = resolved;
         setInternalComments(resolved);
@@ -2363,7 +2396,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     if (!doc) return;
     const bodyComments = doc.package?.document?.comments;
     if (bodyComments && bodyComments.length > 0) {
-      setComments(bodyComments);
+      setComments(bodyComments, false);
       setShowCommentsSidebar(true);
       commentsLoadedRef.current = true;
       // Ensure nextCommentId is above all loaded comment IDs AND tracked change
@@ -2587,13 +2620,14 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   }, [isBodyPmReady, editHistoryAttach]);
 
   // Coarse-grained, IDB-persisted snapshot capture (Versions tab feed).
-  // Scoped by document name — matches recent-files identity. Manual
-  // entries via the panel's "Save version…" button; auto entries every
-  // 10 min while dirty.
+  // Scoped by the host-provided stable document identity. Manual
+  // entries via the panel's "Save version…" button. Embedded hosts capture
+  // acknowledged server saves; standalone mode keeps its dirty idle timer.
   const versionCapture = useVersionHistoryCapture({
-    docId: documentName?.trim() || 'Untitled',
+    docId: versionHistoryDocId?.trim() || documentName?.trim() || 'Untitled',
     view: bodyView,
     author,
+    mode: versionHistoryMode,
   });
 
   // Restore a snapshot's PM doc JSON into the live editor. Mirrors
@@ -3408,7 +3442,9 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   useEffect(() => {
     if (typeof document === 'undefined') return;
     document.documentElement.setAttribute('data-app', 'docs');
-    document.documentElement.setAttribute('data-theme', resolveColorTheme(colorTheme));
+    if (showThemeControls) {
+      document.documentElement.setAttribute('data-theme', resolveColorTheme(colorTheme));
+    }
     // Purge the stale AutoSaveManager localStorage key. The active autosave
     // path uses IndexedDB; this key is never read and wastes quota.
     clearLegacyLocalStorageAutosave();
@@ -3419,18 +3455,28 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     // Only on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Embedded Web Client documents use the server-save queue as their source
+  // of truth. The legacy IndexedDB autosave has one global `current` slot,
+  // so leaving it enabled would offer edits from one document when another
+  // document is opened. Clear any record left by an earlier editor version.
+  useEffect(() => {
+    if (versionHistoryMode !== 'server-save') return;
+    void clearAutosave();
+  }, [versionHistoryMode]);
+
   // While the user's choice is 'auto', track OS theme changes live so the
   // chrome flips with the system without a reload.
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
-    if (colorTheme !== 'auto') return;
+    if (!showThemeControls || colorTheme !== 'auto') return;
     const mql = window.matchMedia('(prefers-color-scheme: dark)');
     const onChange = () => {
       document.documentElement.setAttribute('data-theme', mql.matches ? 'dark' : 'light');
     };
     mql.addEventListener('change', onChange);
     return () => mql.removeEventListener('change', onChange);
-  }, [colorTheme]);
+  }, [colorTheme, showThemeControls]);
   // Update the data-theme attribute synchronously in the click handler so
   // the CSS recalc happens immediately, without waiting for React's
   // commit phase + useEffect. The setState below only drives the icon
@@ -3458,7 +3504,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   const resetForNewDocument = useCallback(() => {
     commentsLoadedRef.current = false;
     trackedChangesLoadedRef.current = false;
-    setComments([]);
+    setComments([], false);
     setHeadingInfos([]);
     setShowCommentsSidebar(false);
     setIsAddingComment(false);
@@ -3543,6 +3589,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
 
   const pushDocument = useCallback(
     (document: Document) => {
+      onDocumentModifiedRef.current?.();
       history.push(document);
       return document;
     },
@@ -3604,13 +3651,14 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   // ignored in modern browsers; only the presence matters).
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hostOwnsUnloadGuard) return;
       if (!isDirtyRef.current) return;
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, []);
+  }, [hostOwnsUnloadGuard]);
 
   // Handle document change
   const handleDocumentChange = useCallback(
@@ -4982,6 +5030,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
       apply(history.state?.package);
       apply(agentRef.current?.getDocument()?.package);
       editsRef.current.set(noteId, text);
+      onDocumentModifiedRef.current?.();
       // Instant visual feedback: patch the painted note text span(s).
       const cls = kind === 'footnote' ? 'layout-footnote' : 'layout-endnote';
       document
@@ -5020,6 +5069,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     apply(history.state?.package);
     apply(agentRef.current?.getDocument()?.package);
     propsEditsRef.current = { ...propsEditsRef.current, ...edits };
+    onDocumentModifiedRef.current?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -7528,10 +7578,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
         toast.error(t('toast.saveSerializeFailed'));
         return;
       }
-      // Checkpoint a version on explicit save (Google-Docs parity). No-op
-      // when nothing changed since the last capture, so repeated saves don't
-      // pile up identical entries.
-      void versionCapture.captureOnSave();
+      // Local downloads are exports, not acknowledged server checkpoints.
       // When a parent supplied `onSave`, it owns persistence — `handleSave`
       // has already passed it the buffer. A browser blob download on top
       // of that would drop a duplicate file into ~/Downloads on every Save
@@ -7554,7 +7601,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     } finally {
       setIsSaving(false);
     }
-  }, [handleSave, documentName, markDirty, onSave, versionCapture, emitError, t]);
+  }, [handleSave, documentName, markDirty, onSave, emitError, t]);
 
   // Autosave to IndexedDB (sheet parity). A periodic interval polls the
   // dirty flag every 30s; if dirty, it serializes and writes the buffer.
@@ -7572,6 +7619,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   const isDirtyRefAuto = useRef(false);
   isDirtyRefAuto.current = isDirty;
   useEffect(() => {
+    if (versionHistoryMode === 'server-save') return;
     const tick = () => {
       if (!isDirtyRefAuto.current) return;
       void (async () => {
@@ -7586,7 +7634,8 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
           // shell: crash-recovery there is a sidecar written next to the file ON
           // DISK by the host bridge, so a second copy of the whole document in
           // browser storage is redundant and contradicts the local-only,
-          // files-stay-on-disk model. Web keeps the IDB autosave.
+          // files-stay-on-disk model. Standalone web mode keeps the IDB
+          // autosave; embedded server-save mode returns before this timer.
           const onDesktop = !!(window as { __deskApp__?: { isDesktop?: boolean } }).__deskApp__
             ?.isDesktop;
           if (!onDesktop) {
@@ -7604,7 +7653,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     };
     const interval = window.setInterval(tick, 30_000);
     return () => window.clearInterval(interval);
-  }, [handleSave, documentName, markDirty]);
+  }, [handleSave, documentName, markDirty, versionHistoryMode]);
 
   // File → Make a copy: download the current content as "Copy of <name>.docx".
   // The original document is unchanged, so we don't touch the dirty flag.
@@ -7710,6 +7759,8 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   const handleExportMd = useCallback(() => handleExportAs('md'), [handleExportAs]);
 
   const handleOpenDocument = useCallback(() => {
+    // A host-owned document must not be replaced through Ctrl+O or the palette.
+    if (!showOpenButton) return;
     // Host override (desktop shell): native dialog + open-where prompt. The
     // host opens the file itself, so don't also trigger the browser picker.
     if (onRequestOpen) {
@@ -7717,7 +7768,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
       return;
     }
     docxInputRef.current?.click();
-  }, [onRequestOpen]);
+  }, [onRequestOpen, showOpenButton]);
 
   // Keep the global-keydown handler in sync with the latest file-op
   // callbacks without recreating the listener. `save` → handleDownloadDocument,
@@ -7990,6 +8041,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
       getDocument: () => history.state,
       getEditorRef: () => pagedEditorRef.current,
       save: handleSave,
+      prepareServerVersion: versionCapture.prepareServerSave,
       setZoom: (zoom: number) => setState((prev) => ({ ...prev, zoom })),
       getZoom: () => state.zoom,
       focus: () => {
@@ -9634,8 +9686,12 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
                           stay without a redundant "second product" File menu.
                           A MenuBar item disappears when its callback is
                           undefined (presence-gated). */
-                            onOpen={appShellHidden ? undefined : handleOpenDocument}
+                            onOpen={
+                              appShellHidden || !showOpenButton ? undefined : handleOpenDocument
+                            }
                             onSave={handleDownloadDocument}
+                            onSaveToServer={readOnly ? undefined : onSaveToServer}
+                            isSavingToServer={isSavingToServer}
                             onMakeCopy={appShellHidden ? undefined : handleMakeCopy}
                             onEmailAsAttachment={
                               appShellHidden ? undefined : handleEmailAsAttachment
@@ -9685,7 +9741,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
                             // existing handlers when ready.
                             onInsertShape={handleInsertShape}
                             onInsertTextBox={handleInsertTextBox}
-                            onSetColorTheme={handleSetColorTheme}
+                            onSetColorTheme={showThemeControls ? handleSetColorTheme : undefined}
                             colorTheme={colorTheme}
                             isDirty={isDirty}
                             isSaving={isSaving}
@@ -9737,8 +9793,9 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
                     the Tauri shell owns crash recovery via sidecar files and
                     shows its own restore UI. IndexedDB autosave is also
                     disabled on desktop (see onDesktop guard above). */}
-                  {!(window as { __deskApp__?: { isDesktop?: boolean } }).__deskApp__
-                    ?.isDesktop && (
+                  {versionHistoryMode !== 'server-save' &&
+                    !(window as { __deskApp__?: { isDesktop?: boolean } }).__deskApp__
+                      ?.isDesktop && (
                     <AutosaveRestoreBanner
                       onRestore={(buf, name) => {
                         void loadBuffer(buf);
@@ -10369,7 +10426,9 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
                                         wordCompat={wordCompat}
                                         readOnly
                                         extensionManager={extensionManager}
-                                        contentLabel={t('sidebar.versionHistory.previewContentLabel')}
+                                        contentLabel={t(
+                                          'sidebar.versionHistory.previewContentLabel'
+                                        )}
                                         scrollContainerRef={previewScrollRef}
                                       />
                                     ) : (
@@ -10391,7 +10450,11 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
 
                             {/* Floating "add comment" button — appears on right edge of page at selection */}
                             {floatingCommentBtn != null && !isAddingComment && !readOnly && (
-                              <Tooltip content={t('formattingBar.addComment')} side="bottom" delayMs={300}>
+                              <Tooltip
+                                content={t('formattingBar.addComment')}
+                                side="bottom"
+                                delayMs={300}
+                              >
                                 <button
                                   type="button"
                                   data-testid="floating-add-comment-button"
@@ -10527,7 +10590,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
                       fixed width. */}
                     {showVersionHistory && (
                       <VersionHistoryPanel
-                        docId={documentName?.trim() || 'Untitled'}
+                        docId={versionHistoryDocId?.trim() || documentName?.trim() || 'Untitled'}
                         saveNamedVersion={versionCapture.saveNamedVersion}
                         onRestoreSnapshot={handleRestoreSnapshot}
                         onPreviewVersion={handlePreviewVersion}
@@ -10954,9 +11017,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
                         }
                       })
                       .catch((err) => {
-                        toast.error(
-                          t('toast.refineFailed', { message: (err as Error).message })
-                        );
+                        toast.error(t('toast.refineFailed', { message: (err as Error).message }));
                       })
                       .finally(() => setProposalBusy(false));
                   }}
@@ -11013,7 +11074,9 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
                           error: null,
                         });
                       })
-                      .catch((err) => toast.error(t('toast.aiRequestFailed', { message: (err as Error).message })))
+                      .catch((err) =>
+                        toast.error(t('toast.aiRequestFailed', { message: (err as Error).message }))
+                      )
                       .finally(() => setAskAiBusy(false));
                     return;
                   }
@@ -11481,13 +11544,17 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
                             },
                           ]
                         : []),
-                      {
-                        id: 'file.open',
-                        label: t('toolbar.open'),
-                        path: t('toolbar.file'),
-                        shortcut: '⌘O',
-                        run: handleOpenDocument,
-                      },
+                      ...(showOpenButton
+                        ? [
+                            {
+                              id: 'file.open',
+                              label: t('toolbar.open'),
+                              path: t('toolbar.file'),
+                              shortcut: '⌘O',
+                              run: handleOpenDocument,
+                            },
+                          ]
+                        : []),
                       {
                         id: 'file.save',
                         label: t('commandPalette.saveDownloadDocx'),

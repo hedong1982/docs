@@ -28,13 +28,17 @@
  */
 
 import { createRoot } from 'react-dom/client';
+import { createRef } from 'react';
 
-import { CasualEditor } from '../components/CasualEditor';
+import { CasualEditor, type CasualEditorRef } from '../components/CasualEditor';
+import { LocaleProvider } from '../i18n/LocaleContext';
 import { applyCspNonce } from '../components/cspNonce';
 import { EmbedTransport } from '../embed/EmbedTransport';
 import { createIframeFileSource } from '../embed/IframeFileSource';
 import type { CasualApp } from '../embed/protocol';
 import { setWorkspaceDocs } from '../docops/workspaceStore';
+
+type EmbedTranslations = Record<string, unknown> & { _lang?: string };
 
 /** Parsed shape of the iframe URL — what `mountEmbedded()` reads
  *  before the host's `casual.hello` arrives. */
@@ -140,34 +144,66 @@ export function mountEmbedded(opts: MountEmbeddedOptions): void {
   opts.root.setAttribute('data-view-mode', config.viewMode);
 
   const reactRoot = createRoot(opts.root);
+  const editorRef = createRef<CasualEditorRef>();
+  let currentViewMode = config.viewMode;
+  let editorLocale: EmbedTranslations | undefined;
+  if (typeof globalThis !== 'undefined') {
+    const initialLocale = (
+      globalThis as typeof globalThis & {
+        __clientOfficeI18n?: unknown;
+      }
+    ).__clientOfficeI18n;
+    if (initialLocale && typeof initialLocale === 'object') {
+      editorLocale = initialLocale as EmbedTranslations;
+    }
+  }
+
+  function applyTheme(theme: 'light' | 'dark' | 'system' | undefined): void {
+    const resolved = theme === 'dark' ? 'dark' : theme === 'system' ? 'light' : 'light';
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-theme', resolved);
+    }
+    opts.root.setAttribute('data-theme', resolved);
+  }
 
   function render(viewMode: 'preview' | 'editor') {
+    currentViewMode = viewMode;
     const isPreview = viewMode === 'preview';
     reactRoot.render(
-      <CasualEditor
-        fileSource={fileSource}
-        docId={config.docId}
-        autosave={!isPreview}
-        // Forward parse / load failures to the host so it can swap
-        // the iframe for a friendly fallback card instead of letting
-        // DocxEditor's own red error UI surface to end users.
-        onError={(err) => {
-          transport.sendError({
-            code: 'parse_failed',
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }}
-        docxEditorProps={{
-          readOnly: isPreview,
-          showToolbar: !isPreview,
-          showPanelRail: !isPreview,
-          showStatusBar: !isPreview,
-          showZoomControl: !isPreview,
-          showRuler: !isPreview,
-        }}
-        /* No collab inside the iframe for v1.1.0 — host wires it
+      <LocaleProvider i18n={editorLocale}>
+        <CasualEditor
+          ref={editorRef}
+          fileSource={fileSource}
+          docId={config.docId}
+          autosave={!isPreview}
+          showServerSave={!isPreview}
+          onServerDirtyChange={(dirty) => transport.sendServerDirty(dirty)}
+          // Forward parse / load failures to the host so it can swap
+          // the iframe for a friendly fallback card instead of letting
+          // DocxEditor's own red error UI surface to end users.
+          onError={(err) => {
+            transport.sendError({
+              code: 'parse_failed',
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }}
+          docxEditorProps={{
+            readOnly: isPreview,
+            showToolbar: !isPreview,
+            showPanelRail: !isPreview,
+            showStatusBar: !isPreview,
+            showZoomControl: !isPreview,
+            showRuler: !isPreview,
+            i18n: editorLocale,
+            showOpenButton: false,
+            showThemeControls: false,
+            versionHistoryMode: 'server-save',
+            hostOwnsUnloadGuard: true,
+          }}
+          /* No collab inside the iframe for v1.1.0 — host wires it
            through a separate envelope if needed. */
-      />
+        />
+      </LocaleProvider>
     );
   }
 
@@ -177,9 +213,32 @@ export function mountEmbedded(opts: MountEmbeddedOptions): void {
   // EmbedTransport handler block. Switching viewMode re-renders
   // with the new chrome / readOnly props.
   transport.on({
+    onCommandClose: async (action) => {
+      const editor = editorRef.current;
+      if (!editor) return { ok: false, dirty: true };
+      try {
+        if (action === 'prepare') {
+          return { ok: true, dirty: await editor.prepareClose() };
+        }
+        if (action === 'cancel') editor.cancelClose();
+        if (action === 'save') await editor.flushSave();
+        return { ok: true, dirty: editor.hasUnsavedServerChanges() };
+      } catch {
+        return { ok: false, dirty: editor.hasUnsavedServerChanges() };
+      }
+    },
     onCommandSetViewMode: ({ viewMode }) => {
       opts.root.setAttribute('data-view-mode', viewMode);
       render(viewMode);
+    },
+    onCommandSetTheme: ({ theme }) => {
+      applyTheme(theme);
+    },
+    onCommandSetLocale: ({ locale, translations }) => {
+      if (translations && typeof translations === 'object') {
+        editorLocale = { ...translations, _lang: locale };
+        render(currentViewMode);
+      }
     },
     // On-device workspace RAG: the host pushes plain text extracted from the
     // user's local folder into the shared workspace index the AI searches.

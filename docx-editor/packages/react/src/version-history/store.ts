@@ -87,7 +87,10 @@ export async function writeVersion(draft: VersionDraft): Promise<number> {
   const id = await new Promise<number>((resolve, reject) => {
     const tx = db.transaction(STORE_VERSIONS, 'readwrite');
     const req = tx.objectStore(STORE_VERSIONS).add(record);
-    req.onsuccess = () => resolve(req.result as number);
+    // Request success precedes transaction commit. Save-and-close must wait
+    // for the commit, otherwise unmount/navigation can discard the checkpoint.
+    tx.oncomplete = () => resolve(req.result as number);
+    tx.onabort = () => reject(tx.error ?? new Error('version transaction aborted'));
     req.onerror = () => reject(req.error ?? new Error('write failed'));
   });
   // Fire-and-forget retention sweep; failures are non-fatal — old

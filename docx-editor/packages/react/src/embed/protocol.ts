@@ -21,6 +21,18 @@ import type {
 
 export type CasualApp = 'docs' | 'sheet';
 
+/** Project host close guard. Responses echo the request envelope id. */
+export interface CloseRequestData {
+  action: 'prepare' | 'save' | 'cancel';
+}
+export interface CloseResponseData {
+  ok: boolean;
+  dirty: boolean;
+}
+export interface ServerDirtyData {
+  dirty: boolean;
+}
+
 /** Common envelope shape — every postMessage on the wire matches this. */
 export interface CasualEnvelope<T = unknown> {
   type: string;
@@ -124,6 +136,8 @@ export interface CommandSetThemeData {
 
 export interface CommandSetLocaleData {
   locale: string;
+  /** Optional complete locale object supplied by an embedding host. */
+  translations?: Record<string, unknown>;
 }
 
 /** Host → editor: switch chrome density between the two consumer-facing

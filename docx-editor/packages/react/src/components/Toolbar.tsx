@@ -228,6 +228,9 @@ export interface ToolbarProps {
   onOpen?: () => void;
   /** Callback to save/download the current DOCX (File → Save) */
   onSave?: () => void;
+  /** Independent host persistence action alongside the local download. */
+  onSaveToServer?: () => void;
+  isSavingToServer?: boolean;
   /** File → Make a copy — download the doc as "Copy of <name>.docx". */
   onMakeCopy?: () => void;
   /** File → Version history — open the version-history panel (Google-Docs
@@ -600,6 +603,8 @@ export function Toolbar({
   showPrintButton = true,
   onOpen,
   onSave,
+  onSaveToServer,
+  isSavingToServer = false,
   onPageSetup,
   onFileProperties,
   onExportPdf,
@@ -691,7 +696,12 @@ export function Toolbar({
       {(() => {
         const hasPrintOrPageSetup = (showPrintButton && onPrint) || onPageSetup;
         const hasFileMenu =
-          hasPrintOrPageSetup || onOpen || onSave || onFileProperties || onExportPdf;
+          hasPrintOrPageSetup ||
+          onOpen ||
+          onSave ||
+          onSaveToServer ||
+          onFileProperties ||
+          onExportPdf;
         if (!hasFileMenu) return null;
         return (
           <MenuDropdown
@@ -712,13 +722,26 @@ export function Toolbar({
                 ? [
                     {
                       icon: 'file_download',
-                      label: t('toolbar.save'),
+                      label: t(onSaveToServer ? 'toolbar.saveToLocal' : 'toolbar.save'),
                       shortcut: t('toolbar.saveShortcut'),
                       onClick: onSave,
                     } as MenuEntry,
                   ]
                 : []),
-              ...((onOpen || onSave) && (hasPrintOrPageSetup || onFileProperties || onExportPdf)
+              ...(onSaveToServer
+                ? [
+                    {
+                      icon: 'file_upload',
+                      label: t(
+                        isSavingToServer ? 'toolbar.savingToServer' : 'toolbar.saveToServer'
+                      ),
+                      onClick: onSaveToServer,
+                      disabled: isSavingToServer,
+                    } as MenuEntry,
+                  ]
+                : []),
+              ...((onOpen || onSave || onSaveToServer) &&
+              (hasPrintOrPageSetup || onFileProperties || onExportPdf)
                 ? [{ type: 'separator' as const } as MenuEntry]
                 : []),
               ...(showPrintButton && onPrint

@@ -18,6 +18,8 @@
  *   - **Explicit save** via `saveNamedVersion(name)` exposed from
  *     this module. The File menu's "Save version…" calls it; manual
  *     snapshots are never auto-pruned.
+ *   - **Server-save mode** freezes content before serialization and captures
+ *     only after acknowledgement, with a ten-minute automatic throttle.
  *
  * Skipped in co-edit mode — when Yjs/y-websocket lands, the server
  * owns the authoritative state and we'd just be duplicating local
@@ -33,21 +35,24 @@ import { Plugin, PluginKey } from 'prosemirror-state';
 import type { EditorView } from 'prosemirror-view';
 import { writeVersion } from './store';
 import { getLiveVersionFeed } from './useLiveVersionList';
+import { createServerVersionCapture } from './serverVersionCapture';
 
 const DEFAULT_IDLE_INTERVAL_MS = 10 * 60 * 1000;
 
 const CAPTURE_PLUGIN_KEY = new PluginKey('version-history-capture');
 
 export interface UseVersionHistoryCaptureOptions {
-  /** Stable id for the active document — drives per-doc retention +
-   *  listing scope. Use the file name (matches recent-files identity)
-   *  until a true docId surface lands. */
+  /** Stable id for the active document — drives per-doc retention and listing
+   *  scope. Hosts should use the complete virtual path when same-named files
+   *  can exist in different directories. */
   docId: string | null;
   /** The mounted ProseMirror view. `null` while the editor is
    *  unmounted or mid-swap. */
   view: EditorView | null;
   /** Disable capture (e.g. in co-edit rooms). Default `true`. */
   enabled?: boolean;
+  /** Server mode captures only acknowledged writes; no independent idle timer. */
+  mode?: 'local' | 'server-save';
   /** Idle interval between auto captures while dirty. Default 10 min. */
   idleIntervalMs?: number;
   /** Optional source format passed through onto the snapshot record
@@ -66,6 +71,8 @@ export interface UseVersionHistoryCaptureReturn {
   /** Capture an automatic snapshot on an explicit save. No-op (returns
    *  `null`) when nothing changed since the last capture. */
   captureOnSave: () => Promise<number | null>;
+  /** Freeze the current revision and return its success-only acknowledgement. */
+  prepareServerSave: () => ((manual: boolean) => Promise<number | null>) | null;
 }
 
 /** Imperative escape hatch outside React — the File menu can wire
@@ -84,6 +91,7 @@ export function useVersionHistoryCapture(
     docId,
     view,
     enabled = true,
+    mode = 'local',
     idleIntervalMs = DEFAULT_IDLE_INTERVAL_MS,
     sourceFormat = null,
     author = null,
@@ -106,6 +114,14 @@ export function useVersionHistoryCapture(
   // Module-scope dirty flag — set by the observe plugin, read by the
   // interval. A ref so re-renders don't reset it.
   const dirtyRef = useRef(false);
+  const serverCaptureRef = useRef<ReturnType<typeof createServerVersionCapture> | null>(null);
+  useEffect(() => {
+    serverCaptureRef.current = enabled && mode === 'server-save' && view
+      ? createServerVersionCapture({
+          initialData: view.state.doc.toJSON(), write: writeVersion, intervalMs: idleIntervalMs,
+        })
+      : null;
+  }, [enabled, mode, view, docId, idleIntervalMs]);
 
   const doCapture = useRef(
     async (kind: 'auto' | 'manual', name: string): Promise<number | null> => {
@@ -157,7 +173,7 @@ export function useVersionHistoryCapture(
   // the effect. enabled-flip-to-false is handled by the early return
   // (no plugin attached, no interval) — same for view going null.
   useEffect(() => {
-    if (!enabled || !view) return;
+    if (!enabled || !view || mode === 'server-save') return;
 
     // Reset dirty on (re)attach so a fresh view doesn't inherit the
     // previous one's pending state.
@@ -202,9 +218,18 @@ export function useVersionHistoryCapture(
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, view]);
+  }, [enabled, view, mode]);
 
   return {
+    prepareServerSave: () => {
+      const { view: liveView, docId: liveDocId, sourceFormat: liveFmt, author: liveAuthor } = optsRef.current;
+      if (!liveView || !liveDocId || !serverCaptureRef.current) return null;
+      return serverCaptureRef.current.prepare({
+        docId: liveDocId, data: liveView.state.doc.toJSON(),
+        name: deriveAutoLabel(liveDocId), sourceFormat: liveFmt,
+        author: liveAuthor ?? undefined,
+      });
+    },
     saveNamedVersion: (name: string) =>
       doCapture.current('manual', name.trim() || 'Untitled version'),
     // Capture an automatic snapshot on an explicit user save (Ctrl+S /

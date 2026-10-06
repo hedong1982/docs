@@ -83,7 +83,7 @@ export function isConflictError(err: unknown): boolean {
  */
 export type AutoSaveTickResult =
   | { kind: 'skip'; reason: 'no-ref' | 'no-bytes' | 'in-flight' | 'not-ready' }
-  | { kind: 'ok'; etag: string; savedAt: Date }
+  | { kind: 'ok'; etag: string; savedAt: Date; acknowledge?: () => Promise<void> }
   | { kind: 'err'; err: unknown };
 
 export interface PerformAutoSaveDeps {
@@ -107,6 +107,8 @@ export interface PerformAutoSaveDeps {
    * always ready (single-user / non-collab).
    */
   isReady?: () => boolean;
+  /** Explicit flushes bypass automatic checkpoint throttling. */
+  manual?: boolean;
 }
 
 /**
@@ -123,6 +125,7 @@ export async function performAutoSave(deps: PerformAutoSaveDeps): Promise<AutoSa
   // seed the editor mounts with.
   if (deps.isReady && !deps.isReady()) return { kind: 'skip', reason: 'not-ready' };
   try {
+    const acknowledge = ref.prepareSave?.(deps.manual === true);
     const bytes = await ref.save({ selective: true });
     // When the editor ref is mounted, a null return means serialization
     // failed silently (the editor caught the error internally). Surface it
@@ -135,7 +138,7 @@ export async function performAutoSave(deps: PerformAutoSaveDeps): Promise<AutoSa
       name: deps.name,
       etag: deps.etag,
     });
-    return { kind: 'ok', etag: result.etag, savedAt: new Date() };
+    return { kind: 'ok', etag: result.etag, savedAt: new Date(), acknowledge };
   } catch (err) {
     return { kind: 'err', err };
   }
@@ -153,6 +156,8 @@ export async function performAutoSave(deps: PerformAutoSaveDeps): Promise<AutoSa
  */
 export interface AutoSaveEditorRef {
   save: (options?: { selective?: boolean }) => Promise<ArrayBuffer | null>;
+  /** Capture per-attempt metadata before serialization; acknowledge only a successful, non-timed-out write. */
+  prepareSave?: (manual: boolean) => () => Promise<void>;
 }
 
 export interface UseFileSourceAutoSaveOptions {
@@ -243,6 +248,10 @@ export interface UseFileSourceAutoSaveReturn {
    * Useful for "Save & close" buttons or a "Save anyway" conflict action.
    */
   flush: () => Promise<void>;
+  /** Pause future automatic writes while a host close decision is pending. */
+  setPaused: (paused: boolean) => void;
+  /** Wait for an already-issued write without starting another one. */
+  waitForIdle: () => Promise<void>;
 }
 
 /**
@@ -278,6 +287,10 @@ export function useFileSourceAutoSave(
   // are actually un-persisted (audit: false 'Saved' after a failed autosave).
   const [pendingError, setPendingError] = useState(false);
   const conflictRef = useRef(false);
+  const pausedRef = useRef(false);
+  const setPaused = useCallback((paused: boolean) => {
+    pausedRef.current = paused;
+  }, []);
 
   // Ref for "is a save currently in flight" — guarding setState
   // doesn't help because React batches updates; a plain mutable ref
@@ -288,6 +301,7 @@ export function useFileSourceAutoSave(
   // hide-triggered save is never silently dropped just because an
   // interval tick happened to be mid-flight (audit: autosave-flush-no-queue).
   const pendingRef = useRef(false);
+  const pendingManualRef = useRef(false);
   // Auto-clear "Save failed" after 60 s so a stale error badge doesn't
   // persist indefinitely when the next ticks simply have nothing to save
   // (audit: autosave-stale-error-status).
@@ -297,6 +311,7 @@ export function useFileSourceAutoSave(
   // save has actually run, even if another save was in flight when they
   // called (audit: autosave-pagehide-no-await coupling).
   const inFlightPromiseRef = useRef<Promise<void> | null>(null);
+  const waitForIdle = useCallback(() => inFlightPromiseRef.current ?? Promise.resolve(), []);
   // Last-known etag for optimistic concurrency. Seeded from open() via
   // initialEtag, refreshed from each successful save, and reseeded whenever the
   // doc changes so a stale etag can't leak across documents.
@@ -340,7 +355,7 @@ export function useFileSourceAutoSave(
    * and silently halting all future autosaves (audit:
    * autosave-inflight-deadlock).
    */
-  const executeOne = useCallback(async (): Promise<void> => {
+  const executeOne = useCallback(async (manual: boolean): Promise<void> => {
     const cfg = cfgRef.current;
     // Not-ready (e.g. collab still syncing): skip silently without flashing a
     // 'saving' status every tick, and never touch the stored document.
@@ -362,6 +377,7 @@ export function useFileSourceAutoSave(
           name: cfg.name,
           isReady: cfg.isReady,
           etag: lastEtagRef.current,
+          manual,
         }),
         timeout,
       ]);
@@ -376,6 +392,8 @@ export function useFileSourceAutoSave(
           setPendingError(false);
           clearTimeout(errorClearTimerRef.current);
           errorClearTimerRef.current = undefined;
+          // Await IDB checkpoint completion before a save-and-close can unmount.
+          await result.acknowledge?.();
           onSavedRef.current?.(result.savedAt, result.etag);
           break;
         case 'err':
@@ -433,10 +451,11 @@ export function useFileSourceAutoSave(
    * the requested save has actually run, even when another save was in
    * flight at call time.
    */
-  const runSave = useCallback((): Promise<void> => {
+  const runSave = useCallback((manual = false): Promise<void> => {
     // Register intent first, so a call that arrives mid-flight is picked
     // up by the running drain loop rather than skipped.
     pendingRef.current = true;
+    pendingManualRef.current ||= manual;
     if (inFlightRef.current && inFlightPromiseRef.current) {
       return inFlightPromiseRef.current;
     }
@@ -445,7 +464,9 @@ export function useFileSourceAutoSave(
       try {
         while (pendingRef.current) {
           pendingRef.current = false;
-          await executeOne();
+          const nextManual = pendingManualRef.current;
+          pendingManualRef.current = false;
+          await executeOne(nextManual);
         }
       } finally {
         inFlightRef.current = false;
@@ -463,7 +484,7 @@ export function useFileSourceAutoSave(
   const flush = useCallback((): Promise<void> => {
     conflictRef.current = false;
     setConflict(false);
-    return runSave();
+    return runSave(true);
   }, [runSave]);
 
   // Interval ticker. Re-arms when `enabled` or `interval` change;
@@ -473,7 +494,7 @@ export function useFileSourceAutoSave(
   useEffect(() => {
     if (!enabled || interval <= 0) return;
     const id = setInterval(() => {
-      if (!conflictRef.current) void runSave();
+      if (!pausedRef.current && !conflictRef.current) void runSave();
     }, interval);
     return () => clearInterval(id);
   }, [enabled, interval, runSave]);
@@ -495,7 +516,7 @@ export function useFileSourceAutoSave(
     const flushOnHide = () => {
       // Don't await — the page may be going away. Skip while a conflict is
       // unresolved: a hide-flush must not silently overwrite the other writer.
-      if (!conflictRef.current) void runSave();
+      if (!pausedRef.current && !conflictRef.current) void runSave();
     };
     const onVisibility = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
@@ -525,7 +546,9 @@ export function useFileSourceAutoSave(
       conflict,
       pendingError,
       flush,
+      setPaused,
+      waitForIdle,
     }),
-    [status, lastSavedAt, lastError, conflict, pendingError, flush]
+    [status, lastSavedAt, lastError, conflict, pendingError, flush, setPaused, waitForIdle]
   );
 }

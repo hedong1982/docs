@@ -44,6 +44,9 @@
     "open": "Abrir",
     "openShortcut": "Ctrl+O",
     "save": "Salvar",
+    "saveToLocal": "Salvar localmente",
+    "saveToServer": "Salvar no servidor",
+    "savingToServer": "Salvando no servidor…",
     "saveShortcut": "Ctrl+S",
     "bookmarks": "Indicadores…",
     "characterSpacing": "Espaçamento entre caracteres…",
@@ -212,9 +215,9 @@
   },
   "font": {
     "selectAriaLabel": "Selecionar família da fonte",
-    "sansSerif": "Sans Serif",
-    "serif": "Serif",
-    "monospace": "Monoespaçado"
+    "sansSerif": "Sem serifa",
+    "serif": "Com serifa",
+    "monospace": "Monoespaçada"
   },
   "fontSize": {
     "decrease": "Diminuir tamanho da fonte",
@@ -598,9 +601,9 @@
         "moveToDocumentStartDescription": "Mover cursor para início do documento",
         "moveToDocumentEnd": "Mover para fim do documento",
         "moveToDocumentEndDescription": "Mover cursor para fim do documento",
-        "pageUp": "Page Up",
+        "pageUp": "Página acima",
         "pageUpDescription": "Rolar uma página para cima",
-        "pageDown": "Page Down",
+        "pageDown": "Página abaixo",
         "pageDownDescription": "Rolar uma página para baixo",
         "zoomIn": "Ampliar",
         "zoomInDescription": "Aumentar nível de zoom",
@@ -1590,6 +1593,7 @@
     "dictionaryLoadFailed": "Não foi possível carregar o dicionário do corretor ortográfico.",
     "translateFailedRetry": "Não foi possível traduzir — verifique sua conexão e tente novamente.",
     "saveSerializeFailed": "Não foi possível salvar — falha ao serializar o documento. Suas edições continuam aqui; tente novamente.",
+    "savedToServer": "Salvo no servidor",
     "savedFile": "{fileName} salvo",
     "saveFailedGeneric": "Não foi possível salvar o documento. Suas edições continuam aqui; tente novamente.",
     "savedFileAttachEmail": "{fileName} salvo. Anexe-o à janela de e-mail.",
@@ -1734,7 +1738,7 @@
     "exportPdf": "Exportar PDF",
     "download": "Baixar",
     "formattingToolbar": "Formatação",
-    "modeNotebook": "Notebook",
+    "modeNotebook": "Caderno",
     "modeSource": "Código",
     "modeSplit": "Lado a lado",
     "modePreview": "Visualização"
@@ -1781,7 +1785,7 @@
     "templateProjectProposal": "Proposta de projeto",
     "templateMemo": "Memorando",
     "templateWeeklyStatus": "Status semanal",
-    "templatePressRelease": "Press release",
+    "templatePressRelease": "Comunicado de imprensa",
     "templateLetter": "Carta",
     "templateTravelItinerary": "Roteiro de viagem",
     "templateRecipe": "Receita",
@@ -1850,5 +1854,24 @@
     "headerBcc": "Cco",
     "headerReplyTo": "Responder a",
     "headerDate": "Data"
+  },
+  "about": {
+    "title": "Sobre {appName}",
+    "tagline": "Um editor .docx simples e colaborativo em tempo real.",
+    "openIt": "Abra.",
+    "tryLiveDemo": "Experimente a demonstração ao vivo",
+    "version": "Versão",
+    "source": "Fonte",
+    "engine": "Motor",
+    "builtOn": "Baseado em",
+    "license": "Licença",
+    "copyright": "© {year} Casual Office. Distribuído sob a licença Apache-2.0."
+  },
+  "focusMode": {
+    "word": "palavra",
+    "words": "palavras",
+    "lessThanMinute": "< 1 min",
+    "readingTime": "~{minutes} min de leitura",
+    "exit": "para sair"
   }
 }

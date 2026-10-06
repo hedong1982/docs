@@ -279,6 +279,8 @@ export function MenuBar() {
     onNew,
     onOpen,
     onSave,
+    onSaveToServer,
+    isSavingToServer = false,
     onMakeCopy,
     onEmailAsAttachment,
     onOpenVersionHistory,
@@ -405,6 +407,7 @@ export function MenuBar() {
     onNew ||
     onOpen ||
     onSave ||
+    onSaveToServer ||
     onMakeCopy ||
     onEmailAsAttachment ||
     onFileProperties ||
@@ -439,9 +442,19 @@ export function MenuBar() {
       ? [
           {
             icon: 'file_download',
-            label: t('toolbar.save'),
+            label: t(onSaveToServer ? 'toolbar.saveToLocal' : 'toolbar.save'),
             shortcut: t('toolbar.saveShortcut'),
             onClick: onSave,
+          } as MenuEntry,
+        ]
+      : []),
+    ...(onSaveToServer
+      ? [
+          {
+            icon: 'file_upload',
+            label: t(isSavingToServer ? 'toolbar.savingToServer' : 'toolbar.saveToServer'),
+            onClick: onSaveToServer,
+            disabled: isSavingToServer,
           } as MenuEntry,
         ]
       : []),
@@ -471,7 +484,12 @@ export function MenuBar() {
           } as MenuEntry,
         ]
       : []),
-    ...((onOpen || onSave || onMakeCopy || onEmailAsAttachment || onOpenVersionHistory) &&
+    ...((onOpen ||
+      onSave ||
+      onSaveToServer ||
+      onMakeCopy ||
+      onEmailAsAttachment ||
+      onOpenVersionHistory) &&
     (hasPrintOrPageSetup || onFileProperties || hasExport)
       ? [{ type: 'separator' as const } as MenuEntry]
       : []),

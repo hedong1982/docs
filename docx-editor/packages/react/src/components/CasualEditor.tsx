@@ -54,6 +54,7 @@ import {
 import { DocxEditor, type DocxEditorProps, type DocxEditorRef } from './DocxEditor';
 import { PresenceCluster } from './PresenceCluster';
 import { useTranslation } from '../i18n';
+import { toast } from 'sonner';
 import { ShareDialog } from './ShareDialog';
 import { createDocOpsTransport } from '../docops';
 import { createEmptyDocument } from '@eigenpal/docx-core/utils';
@@ -75,6 +76,7 @@ import {
   type UseFileSourceAutoSaveReturn,
 } from '../file-source/useFileSourceAutoSave';
 import type { FileSource } from '../file-source/types';
+import { createServerSaveTracker } from '../file-source/serverSaveTracker';
 import { SigningProvider, SigningPane } from '../signing';
 import type { SigningSessionConfig } from '../signing';
 
@@ -155,6 +157,10 @@ export interface CasualEditorProps {
    * built-in component.
    */
   autosave?: boolean;
+  /** Add a separate File > Save to server action using this FileSource. */
+  showServerSave?: boolean;
+  /** Server acknowledgement state, independent of browser downloads/cache. */
+  onServerDirtyChange?: (dirty: boolean) => void;
   /** Tick interval for autosave in ms. Default 30s. */
   autosaveInterval?: number;
   /** Author used by comments + track-change attribution. */
@@ -246,6 +252,9 @@ export interface CasualEditorProps {
 export interface CasualEditorRef extends DocxEditorRef {
   /** Forces a save round-trip through the autosave hook. No-op when autosave is disabled. */
   flushSave: () => Promise<void>;
+  prepareClose: () => Promise<boolean>;
+  cancelClose: () => void;
+  hasUnsavedServerChanges: () => boolean;
   /** Current collab presence — empty when collab is off. */
   collabPeers: () => CollabPeer[];
   /** Connection status — `'standalone'` when collab is off. */
@@ -261,6 +270,8 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
       collab,
       user,
       autosave = false,
+      showServerSave = false,
+      onServerDirtyChange,
       autosaveInterval = 30000,
       author,
       documentMode,
@@ -283,6 +294,37 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
     } = props;
 
     const editorRef = useRef<DocxEditorRef>(null);
+    const { t } = useTranslation();
+    const manualSavePending = useRef(false);
+    const lastServerSaveSucceeded = useRef(false);
+    const onServerDirtyChangeRef = useRef(onServerDirtyChange);
+    onServerDirtyChangeRef.current = onServerDirtyChange;
+    const trackerRef = useRef<ReturnType<typeof createServerSaveTracker> | null>(null);
+    if (!trackerRef.current) {
+      trackerRef.current = createServerSaveTracker((dirty) =>
+        onServerDirtyChangeRef.current?.(dirty)
+      );
+    }
+    const tracker = trackerRef.current;
+    // The queue captures the edit revision BEFORE serialization starts. A new
+    // edit while serialization or the network request is running stays dirty.
+    const serverEditorRef = useRef({
+      prepareSave: (manual: boolean) => {
+        const revision = tracker.capture();
+        const checkpoint = editorRef.current?.prepareServerVersion();
+        return async () => {
+          tracker.saved(revision);
+          await checkpoint?.(manual);
+        };
+      },
+      save: async (options?: { selective?: boolean }) => {
+        return editorRef.current?.save(options) ?? null;
+      },
+    });
+    const handleDocumentModified = useCallback(() => {
+      tracker.changed();
+      docxEditorProps?.onDocumentModified?.();
+    }, [tracker, docxEditorProps?.onDocumentModified]);
 
     // ---------------------------------------------------------------
     // Document loading via FileSource
@@ -428,12 +470,33 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
     const autosaveState = useFileSourceAutoSave({
       fileSource,
       docId,
-      editorRef,
+      editorRef: serverEditorRef,
       interval: autosaveInterval,
       enabled: autosave,
       isReady: isSaveReady,
       initialEtag: loadState.kind === 'ready' ? loadState.etag : undefined,
+      onSaved: () => {
+        lastServerSaveSucceeded.current = true;
+      },
+      onError: () => {
+        lastServerSaveSucceeded.current = false;
+      },
     });
+
+    const handleSaveToServer = useCallback(async () => {
+      if (manualSavePending.current) return;
+      manualSavePending.current = true;
+      lastServerSaveSucceeded.current = false;
+      try {
+        // Wait for the entire queue, including a manual request arriving during
+        // an automatic save. An earlier response must not report this one saved.
+        await autosaveState.flush();
+        if (lastServerSaveSucceeded.current) toast.success(t('toast.savedToServer'));
+        else toast.error(t('toast.saveFailedGeneric'));
+      } finally {
+        manualSavePending.current = false;
+      }
+    }, [autosaveState.flush, t]);
 
     useEffect(() => {
       if (autosave && onAutosaveState) onAutosaveState(autosaveState);
@@ -451,11 +514,22 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
       const safe: DocxEditorRef = inner ?? noopDocxEditorRef();
       return {
         ...safe,
-        flushSave: () => (autosave ? autosaveState.flush() : Promise.resolve()),
+        flushSave: async () => {
+          lastServerSaveSucceeded.current = false;
+          await autosaveState.flush();
+          if (!lastServerSaveSucceeded.current) throw new Error('Server save failed');
+        },
+        prepareClose: async () => {
+          autosaveState.setPaused(true);
+          await autosaveState.waitForIdle();
+          return tracker.isDirty();
+        },
+        cancelClose: () => autosaveState.setPaused(false),
+        hasUnsavedServerChanges: () => tracker.isDirty(),
         collabPeers: () => (collabState ? collabState.peers : []),
         collabStatus: () => (collabState ? collabState.status : 'standalone'),
       };
-    }, [collabState, autosaveState, autosave]);
+    }, [collabState, autosaveState, autosave, tracker]);
 
     // ---------------------------------------------------------------
     // Render
@@ -494,6 +568,17 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
         docopsTransport={createDocOpsTransport({ collabWsUrl: collabBackend, room: collabRoom })}
         ai={ai}
         {...docxEditorProps}
+        // Keep the title row hidden in the Web Client while using the complete
+        // virtual path as the history key, so same-named files in different
+        // directories do not share IndexedDB snapshots.
+        versionHistoryDocId={docId}
+        onDocumentModified={handleDocumentModified}
+        // Manual and automatic server saves share one queue and ETag chain.
+        // Never wire FileSource to onSave: that also runs during local exports.
+        onSaveToServer={showServerSave ? handleSaveToServer : docxEditorProps?.onSaveToServer}
+        isSavingToServer={
+          showServerSave ? autosaveState.status === 'saving' : docxEditorProps?.isSavingToServer
+        }
       />
     );
 
@@ -654,6 +739,7 @@ function noopDocxEditorRef(): DocxEditorRef {
     getDocument: () => null,
     getEditorRef: () => null,
     save: noopAsync,
+    prepareServerVersion: () => null,
     setZoom: noop,
     getZoom: () => 100,
     focus: noop,

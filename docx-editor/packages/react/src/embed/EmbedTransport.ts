@@ -71,6 +71,10 @@ export interface EmbedTransportHandlers {
   onCommandSetWorkspace?: (data: CommandSetWorkspaceData) => void | Promise<void>;
   onCommandFocus?: () => void | Promise<void>;
   onCommandSave?: () => void | Promise<void>;
+  /** Correlated host request to prepare, save, or cancel an editor close. */
+  onCommandClose?: (
+    action: 'prepare' | 'save' | 'cancel'
+  ) => Promise<{ ok: boolean; dirty: boolean }>;
   onCommandLoad?: () => void | Promise<void>;
   /** Host → editor signing session. Editor responds with `signature.request.ack`. */
   onSignatureRequest?: (
@@ -183,6 +187,10 @@ export class EmbedTransport {
     this.post('casual.error', data);
   }
 
+  sendServerDirty(dirty: boolean): void {
+    this.post('casual.server.dirty', { dirty });
+  }
+
   /** Tear down listeners. Idempotent. */
   destroy(): void {
     if (this.destroyed) return;
@@ -217,6 +225,15 @@ export class EmbedTransport {
     }
 
     switch (env.type) {
+      case 'casual.command.close': {
+        const action = (env.data as { action?: string }).action;
+        if (!env.id || !['prepare', 'save', 'cancel'].includes(action ?? '')) return;
+        const result = await this.handlers.onCommandClose?.(
+          action as 'prepare' | 'save' | 'cancel'
+        );
+        this.postReply(env.id, 'casual.close.response', result ?? { ok: false, dirty: true });
+        return;
+      }
       case 'casual.hello':
         await this.handlers.onHostHello?.(env.data as HostHelloData);
         this.sendReady();
