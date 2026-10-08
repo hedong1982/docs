@@ -37,6 +37,7 @@ import { EmbedTransport } from '../embed/EmbedTransport';
 import { createIframeFileSource } from '../embed/IframeFileSource';
 import type { CasualApp } from '../embed/protocol';
 import { setWorkspaceDocs } from '../docops/workspaceStore';
+import { configureFormatConverter } from '../lib/format-converter';
 
 type EmbedTranslations = Record<string, unknown> & { _lang?: string };
 
@@ -75,11 +76,14 @@ export interface MountEmbeddedOptions {
   hostOrigin?: string;
   /** Optional version / commit / capabilities for the hello handshake. */
   identity?: { version: string; commit: string; capabilities?: string[] };
+  /** URL emitted by the host bundler for the lazy ODT conversion worker. */
+  converterWorkerUrl?: string;
 }
 
 /** Public entry — called by embed.html. Resolves once the editor is
  *  mounted. */
 export function mountEmbedded(opts: MountEmbeddedOptions): void {
+  if (opts.converterWorkerUrl) configureFormatConverter(opts.converterWorkerUrl);
   const search = opts.search ?? (typeof window !== 'undefined' ? window.location.search : '');
   const config = parseUrlConfig(search);
 
@@ -150,9 +154,9 @@ export function mountEmbedded(opts: MountEmbeddedOptions): void {
   if (typeof globalThis !== 'undefined') {
     const initialLocale = (
       globalThis as typeof globalThis & {
-        __clientOfficeI18n?: unknown;
+        __clientDocsI18n?: unknown;
       }
-    ).__clientOfficeI18n;
+    ).__clientDocsI18n;
     if (initialLocale && typeof initialLocale === 'object') {
       editorLocale = initialLocale as EmbedTranslations;
     }

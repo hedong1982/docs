@@ -40,5 +40,5 @@ export function triggerBrowserDownload(blob: Blob, fileName: string): void {
  * downloaded `.docx` filename — preserved rather than silently unified.
  */
 export function documentBaseName(documentName: string | undefined, fallback = 'Document'): string {
-  return (documentName?.trim() || fallback).replace(/\.docx$/i, '');
+  return (documentName?.trim() || fallback).replace(/\.(docx|odt)$/i, '');
 }

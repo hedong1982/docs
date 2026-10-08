@@ -62,7 +62,7 @@ let initialized = false;
 
 async function ensureInit(): Promise<void> {
   if (initialized) return;
-  await init();
+  await init({ wasmUrl: new URL('./s1engine_wasm_bg.wasm', import.meta.url) });
   initialized = true;
 }
 

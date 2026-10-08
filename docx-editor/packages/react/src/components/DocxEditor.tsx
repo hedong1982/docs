@@ -861,6 +861,8 @@ export interface DocxEditorProps {
   renderLogo?: () => ReactNode;
   /** Document name shown in the title bar. */
   documentName?: string;
+  /** Original storage filename for local saves, independent of title-bar UI. */
+  downloadFileName?: string;
   /** Stable identity used to isolate IndexedDB version history between files. */
   versionHistoryDocId?: string;
   /** Callback when document name changes */
@@ -1857,6 +1859,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     renderLogo,
     documentName,
     versionHistoryDocId,
+    downloadFileName,
     onDocumentNameChange,
     documentNameEditable = true,
     renderTitleBarRight,
@@ -7588,8 +7591,12 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
         markDirty(false);
         return;
       }
-      const blob = createDocxBlob(buffer);
-      const fileName = `${documentBaseName(documentName, 'document')}.docx`;
+      const originalName = downloadFileName || documentName;
+      const isOdt = /\.odt$/i.test(originalName || '');
+      const { toOriginalDocumentFormat } = await import('../lib/format-converter');
+      const output = await toOriginalDocumentFormat(buffer, originalName);
+      const blob = isOdt ? new Blob([output], { type: 'application/vnd.oasis.opendocument.text' }) : createDocxBlob(output);
+      const fileName = `${documentBaseName(originalName, 'document')}.${isOdt ? 'odt' : 'docx'}`;
       triggerBrowserDownload(blob, fileName);
       markDirty(false);
       toast.success(t('toast.savedFile', { fileName }));
@@ -7601,7 +7608,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     } finally {
       setIsSaving(false);
     }
-  }, [handleSave, documentName, markDirty, onSave, emitError, t]);
+  }, [handleSave, documentName, downloadFileName, markDirty, onSave, emitError, t]);
 
   // Autosave to IndexedDB (sheet parity). A periodic interval polls the
   // dirty flag every 30s; if dirty, it serializes and writes the buffer.

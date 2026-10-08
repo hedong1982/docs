@@ -294,6 +294,7 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
     } = props;
 
     const editorRef = useRef<DocxEditorRef>(null);
+    const sourceFileNameRef = useRef('');
     const { t } = useTranslation();
     const manualSavePending = useRef(false);
     const lastServerSaveSucceeded = useRef(false);
@@ -318,7 +319,10 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
         };
       },
       save: async (options?: { selective?: boolean }) => {
-        return editorRef.current?.save(options) ?? null;
+        const buffer = await editorRef.current?.save(options);
+        if (!buffer) return null;
+        const { toOriginalDocumentFormat } = await import('../lib/format-converter');
+        return toOriginalDocumentFormat(buffer, sourceFileNameRef.current);
       },
     });
     const handleDocumentModified = useCallback(() => {
@@ -350,6 +354,7 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
           const { toDocxBytes } = await import('../lib/format-converter');
           const buffer = await toDocxBytes(result.bytes, result.name);
           if (cancelled) return;
+          sourceFileNameRef.current = result.name;
           setLoadState({
             kind: 'ready',
             buffer,
@@ -568,6 +573,7 @@ export const CasualEditor = forwardRef<CasualEditorRef, CasualEditorProps>(
         docopsTransport={createDocOpsTransport({ collabWsUrl: collabBackend, room: collabRoom })}
         ai={ai}
         {...docxEditorProps}
+        downloadFileName={loadState.fileName}
         // Keep the title row hidden in the Web Client while using the complete
         // virtual path as the history key, so same-named files in different
         // directories do not share IndexedDB snapshots.

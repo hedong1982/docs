@@ -34,12 +34,18 @@ export function isForeignFormat(ext: string): ext is ForeignFormat {
 }
 
 let worker: Worker | null = null;
+let workerUrl: string | undefined;
+
+/** Let static hosts supply the bundler-emitted, content-hashed worker URL. */
+export function configureFormatConverter(url: string): void {
+  workerUrl = url;
+}
 let nextId = 1;
 const pending = new Map<number, (r: WorkerResponse) => void>();
 
 function getWorker(): Worker {
   if (worker) return worker;
-  worker = new Worker(new URL('./format-converter.worker.ts', import.meta.url), {
+  worker = new Worker(workerUrl || new URL('./format-converter.worker.ts', import.meta.url), {
     type: 'module',
   });
   worker.addEventListener('message', (e: MessageEvent<WorkerResponse>) => {
@@ -48,16 +54,35 @@ function getWorker(): Worker {
     pending.delete(e.data.id);
     resolver(e.data);
   });
+  const fail = () => {
+    worker?.terminate();
+    worker = null;
+    for (const [id, resolve] of pending) resolve({ id, ok: false, error: 'Format converter worker failed' });
+    pending.clear();
+  };
+  worker.addEventListener('error', fail);
+  worker.addEventListener('messageerror', fail);
   return worker;
 }
 
 function send<T extends WorkerResponse>(req: WorkerRequest, transfer: Transferable[]): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(req.id);
+      reject(new Error('Format conversion timed out'));
+    }, 60000);
     pending.set(req.id, (r) => {
+      clearTimeout(timer);
       if (r.ok) resolve(r as T);
       else reject(new Error(r.error));
     });
-    getWorker().postMessage(req, transfer);
+    try {
+      getWorker().postMessage(req, transfer);
+    } catch (error) {
+      clearTimeout(timer);
+      pending.delete(req.id);
+      reject(error);
+    }
   });
 }
 
@@ -123,7 +148,9 @@ export async function exportDocxAs(
   const req: ConvertRequest = {
     id: nextId++,
     kind: 'convert',
-    bytes: docxBytes,
+    // Serialization buffers may belong to DocumentAgent/history. Never detach
+    // them when handing conversion work to another thread.
+    bytes: docxBytes.slice(),
     from: 'docx',
     to,
   };
@@ -133,10 +160,18 @@ export async function exportDocxAs(
     kind: 'convert';
     bytes?: Uint8Array;
     text?: string;
-  }>(req, [docxBytes.buffer]);
+  }>(req, [req.bytes.buffer]);
   if (reply.text !== undefined) return reply.text;
   if (reply.bytes !== undefined) return reply.bytes;
   throw new Error('Converter returned neither bytes nor text');
+}
+
+/** Preserve a host-owned ODT file's format at every persistence boundary. */
+export async function toOriginalDocumentFormat(buffer: ArrayBuffer, fileName?: string): Promise<ArrayBuffer> {
+  if (formatFromFilename(fileName || '') !== 'odt') return buffer;
+  const converted = await exportDocxAs(new Uint8Array(buffer), 'odt');
+  if (typeof converted === 'string') throw new Error('ODT converter returned text');
+  return converted.buffer.slice(converted.byteOffset, converted.byteOffset + converted.byteLength) as ArrayBuffer;
 }
 
 /** Sniff the format of a file by its bytes. Falls back to the extension. */
